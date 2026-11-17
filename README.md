@@ -1,10 +1,6 @@
 # Spellbook
 
-One repository that sets up Claude Code, Codex, and opencode the same way on every machine. Clone it, run one command, and every agent gets the same skills, MCP servers, instructions, and hooks.
-
-A new laptop used to cost me an afternoon of copying `SKILL.md` files between three hidden directories. Each agent also had its own idea of where those directories were. Now it costs one command and a coffee.
-
-The rule that matters most: no agent publishes prose that fails [slopbliterator](https://github.com/MichelKazi/slopbliterator). A hook reads every commit message, PR body, issue comment, and markdown file before a [meat machine](https://en.wikipedia.org/wiki/Homo_sapiens) has to.
+It's like dotfiles but instead of CLI tooling and configs it's instructions and skills for my shady little chinese AI models to do shady shit the way I want them to
 
 ### What it installs
 
