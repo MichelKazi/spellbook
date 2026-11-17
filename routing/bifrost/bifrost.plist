@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Rendered by `spellbook install --with routing`. Keys load from ~/.config/llm-keys.env at start, never stored here. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.spellbook.bifrost</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>source $HOME/.config/llm-keys.env &amp;&amp; exec npx -y @maximhq/bifrost@1.6.3 --transport-version v1.6.5 -app-dir $HOME/.config/bifrost -host 127.0.0.1 -port 8080</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__HOME__/.config/bifrost</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.config/bifrost/bifrost.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.config/bifrost/bifrost.log</string>
+</dict>
+</plist>

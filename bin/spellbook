@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""spellbook: install skills, MCP servers, hooks, and instructions into Claude Code, Codex, and opencode.
+
+  spellbook install   [--with routing,personal,lsp] [--agents claude,codex,opencode] [--dry-run] [--skip-external]
+  spellbook uninstall [--agents ...] [--dry-run]
+  spellbook status
+
+Ownership: Spellbook touches only what it owns. That is the symlinks it creates into this
+repo, the marked block in each agent's global instructions file, and hook entries whose
+command points into this repo. External skills, MCP servers, and tools are installed through
+each tool's own CLI, so they also uninstall through it.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+HOME = Path.home()
+SKILLS_CLI = ["npx", "-y", "skills@1.9.0"]
+BEGIN, END = "<!-- spellbook:begin (managed, edit in spellbook/) -->", "<!-- spellbook:end -->"
+GATE = f"python3 {ROOT / 'hooks' / 'slop-gate.py'}"
+
+AGENTS = {
+    "claude":   {"bin": "claude",   "skills_id": "claude-code", "instructions": HOME / ".claude/CLAUDE.md"},
+    "codex":    {"bin": "codex",    "skills_id": "codex",       "instructions": HOME / ".codex/AGENTS.md"},
+    "opencode": {"bin": "opencode", "skills_id": "opencode",    "instructions": HOME / ".config/opencode/AGENTS.md"},
+}
+# Codex and opencode read ~/.agents/skills; Claude Code reads ~/.claude/skills.
+SKILL_DIRS = {"claude": HOME / ".claude/skills", "codex": HOME / ".agents/skills", "opencode": HOME / ".agents/skills"}
+BIN_DIR = HOME / ".local/bin"
+
+DRY = False
+
+
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+def say(msg): print(msg, flush=True)
+
+
+def run(cmd, check=False, shell=False, quiet=False):
+    shown = cmd if shell else " ".join(cmd)
+    if DRY:
+        say(f"    would run: {shown}")
+        return True
+    r = subprocess.run(cmd, shell=shell, capture_output=quiet, text=True)
+    if r.returncode != 0:
+        say(f"    ! failed ({r.returncode}): {shown}")
+        if quiet and r.stderr:
+            say("      " + r.stderr.strip().splitlines()[-1][:200])
+        if check:
+            sys.exit(1)
+    return r.returncode == 0
+
+
+def write(path: Path, text: str, mode=None):
+    if DRY:
+        say(f"    would write {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    if mode:
+        path.chmod(mode)
+
+
+def link(src: Path, dst: Path):
+    """Symlink dst -> src. Replace only our own links; never clobber a real file."""
+    if dst.is_symlink():
+        if dst.resolve() == src.resolve():
+            return
+        if not str(dst.resolve()).startswith(str(ROOT)):
+            say(f"    skip {dst}: already linked elsewhere ({os.readlink(dst)})")
+            return
+    elif dst.exists():
+        say(f"    skip {dst}: a real file or directory is already there")
+        return
+    if DRY:
+        say(f"    would link {dst} -> {src}")
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink():
+        dst.unlink()
+    dst.symlink_to(src)
+    say(f"    linked {dst}")
+
+
+def unlink_ours(dst: Path):
+    if dst.is_symlink() and str(dst.resolve()).startswith(str(ROOT)):
+        if DRY:
+            say(f"    would remove {dst}")
+        else:
+            dst.unlink()
+            say(f"    removed {dst}")
+
+
+def load_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_json(path: Path, data):
+    write(path, json.dumps(data, indent=2) + "\n")
+
+
+def manifest():
+    with open(ROOT / "Spellfile.toml", "rb") as fh:
+        return tomllib.load(fh)
+
+
+def pick(items, groups):
+    return [i for i in items if i.get("group", "core") in groups]
+
+
+# ─── components ─────────────────────────────────────────────────────────────
+
+def first_party_skills(groups):
+    dirs = [ROOT / "skills" / g for g in groups if (ROOT / "skills" / g).is_dir()]
+    if "routing" in groups:
+        dirs.append(ROOT / "routing" / "skills")
+    return [d for base in dirs for d in sorted(base.iterdir()) if (d / "SKILL.md").exists()]
+
+
+def install_tools(spec, groups):
+    say("tools")
+    for t in pick(spec.get("tool", []), groups):
+        if shutil.which(t["check"]):
+            say(f"    ok {t['name']}")
+            continue
+        say(f"    installing {t['name']}")
+        run(t["install"], shell=True)
+
+
+def install_skills(spec, groups, agents, external):
+    say("skills")
+    targets = {SKILL_DIRS[a] for a in agents}
+    for skill in first_party_skills(groups):
+        for d in sorted(targets):
+            link(skill, d / skill.name)
+    if not external:
+        return
+    ids = [AGENTS[a]["skills_id"] for a in agents]
+    for s in pick(spec.get("skill", []), groups):
+        say(f"    {s['source']}: {', '.join(s['skills'])}")
+        run(SKILLS_CLI + ["add", s["source"], "-g", "-y", "-a", *ids, "-s", *s["skills"]], quiet=True)
+
+
+def install_mcp(spec, groups, agents):
+    say("mcp servers")
+    for m in pick(spec.get("mcp", []), groups):
+        cmd, args, env = m["command"], m.get("args", []), m.get("env", {})
+        targets = [a for a in agents if a in m.get("agents", agents)]
+        if "claude" in targets:
+            have = subprocess.run(["claude", "mcp", "get", m["name"]], capture_output=True).returncode == 0
+            if not have:
+                run(["claude", "mcp", "add", "-s", "user", *sum((["-e", f"{k}={v}"] for k, v in env.items()), []),
+                     m["name"], "--", cmd, *args], quiet=True)
+        if "codex" in targets:
+            have = subprocess.run(["codex", "mcp", "get", m["name"]], capture_output=True).returncode == 0
+            if not have:
+                run(["codex", "mcp", "add", *sum((["--env", f"{k}={v}"] for k, v in env.items()), []),
+                     m["name"], "--", cmd, *args], quiet=True)
+        if "opencode" in targets:
+            path = HOME / ".config/opencode/opencode.json"
+            cfg = load_json(path)
+            cfg.setdefault("$schema", "https://opencode.ai/config.json")
+            servers = cfg.setdefault("mcp", {})
+            if m["name"] not in servers:
+                servers[m["name"]] = {"type": "local", "command": [cmd, *args], "enabled": True,
+                                      **({"environment": env} if env else {})}
+                save_json(path, cfg)
+        say(f"    ok {m['name']} ({', '.join(targets)})")
+
+
+def install_plugins(spec, groups, agents):
+    plugins = pick(spec.get("plugin", []), groups)
+    if not plugins:
+        return
+    say("plugins")
+    for p in plugins:
+        if "claude" in agents and p.get("claude"):
+            if p.get("claude_marketplace"):
+                run(["claude", "plugin", "marketplace", "add", p["claude_marketplace"]], quiet=True)
+            run(["claude", "plugin", "install", p["claude"]], quiet=True)
+        if "codex" in agents and p.get("codex"):
+            if p.get("codex_marketplace"):
+                run(["codex", "plugin", "marketplace", "add", p["codex_marketplace"]], quiet=True)
+            run(["codex", "plugin", "add", p["codex"]], quiet=True)
+        if "opencode" in agents and p.get("opencode"):
+            path = HOME / ".config/opencode/opencode.json"
+            cfg = load_json(path)
+            if p["opencode"] not in cfg.setdefault("plugin", []):
+                cfg["plugin"].append(p["opencode"])
+                save_json(path, cfg)
+        say(f"    ok {p['name']}")
+
+
+def instructions_text(groups):
+    parts = [(ROOT / "AGENTS.md").read_text().strip()]
+    if "routing" in groups:
+        parts.append((ROOT / "routing" / "AGENTS.md").read_text().strip())
+    return "\n\n".join(parts)
+
+
+def set_block(path: Path, body):
+    """Replace or append the managed block; leave the rest of the file alone."""
+    text = path.read_text() if path.exists() else ""
+    start, end = text.find(BEGIN), text.find(END)
+    if start != -1 and end != -1:
+        before, after = text[:start], text[end + len(END):]
+    else:
+        before, after = (text.rstrip() + "\n\n" if text.strip() else ""), "\n"
+    new = before + (f"{BEGIN}\n{body}\n{END}" if body is not None else "") + after
+    if body is None:
+        new = new.strip() + "\n" if new.strip() else ""
+    if new != text:
+        write(path, new)
+        if not DRY:
+            say(f"    {'updated' if body is not None else 'cleared'} {path}")
+
+
+def install_instructions(groups, agents):
+    say("instructions")
+    body = instructions_text(groups)
+    for a in agents:
+        set_block(AGENTS[a]["instructions"], body)
+
+
+def hook_entries():
+    return {
+        "PreToolUse": {"matcher": "Bash", "hooks": [{"type": "command", "command": GATE, "timeout": 30}]},
+        "PostToolUse": {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": GATE, "timeout": 30}]},
+    }
+
+
+def strip_ours(hooks: dict):
+    for event in list(hooks):
+        hooks[event] = [e for e in hooks[event]
+                        if not any(str(ROOT) in h.get("command", "") for h in e.get("hooks", []))]
+        if not hooks[event]:
+            del hooks[event]
+
+
+def install_hooks(agents):
+    say("hooks")
+    if "claude" in agents:
+        path = HOME / ".claude/settings.json"
+        cfg = load_json(path)
+        hooks = cfg.setdefault("hooks", {})
+        strip_ours(hooks)
+        for event, entry in hook_entries().items():
+            hooks.setdefault(event, []).append(entry)
+        save_json(path, cfg)
+        say(f"    slop gate -> {path}")
+    if "codex" in agents:
+        path = HOME / ".codex/hooks.json"
+        cfg = load_json(path)
+        hooks = cfg.setdefault("hooks", {})
+        strip_ours(hooks)
+        hooks.setdefault("PreToolUse", []).append(hook_entries()["PreToolUse"])
+        save_json(path, cfg)
+        say(f"    slop gate -> {path} (approve it once with /hooks in codex)")
+    if "opencode" in agents:
+        src = (ROOT / "adapters/opencode/slop-gate.ts").read_text().replace("__GATE__", str(ROOT / "hooks/slop-gate.py"))
+        dst = HOME / ".config/opencode/plugin/spellbook-slop-gate.ts"
+        if not dst.exists() or dst.read_text() != src:
+            write(dst, src)
+        say(f"    slop gate -> {dst}")
+
+
+def install_routing():
+    say("routing")
+    for f in sorted((ROOT / "routing/bin").iterdir()):
+        link(f, BIN_DIR / f.name)
+    keys = HOME / ".config/llm-keys.env"
+    if not keys.exists():
+        say(f"    no {keys}: run {ROOT / 'routing/keys.sh'} to add your DeepSeek and GLM keys")
+    bifrost = HOME / ".config/bifrost/config.json"
+    if not bifrost.exists():
+        write(bifrost, (ROOT / "routing/bifrost/config.json").read_text(), 0o600)
+    for f in ("start.sh", "stop.sh"):
+        link(ROOT / "routing/bifrost" / f, HOME / ".config/bifrost" / f)
+    if sys.platform == "darwin":
+        plist = HOME / "Library/LaunchAgents/com.spellbook.bifrost.plist"
+        old = HOME / "Library/LaunchAgents/com.mkazi.bifrost.plist"
+        if old.exists():
+            say(f"    bifrost: {old.name} already manages it, leaving it alone")
+        elif not plist.exists():
+            write(plist, (ROOT / "routing/bifrost/bifrost.plist").read_text().replace("__HOME__", str(HOME)))
+            run(["launchctl", "load", "-w", str(plist)])
+
+
+def uninstall_all(groups, agents):
+    say("removing Spellbook-owned links, blocks, and hooks")
+    every = ["core", "personal", "routing", "lsp"]
+    for skill in first_party_skills(every):
+        for d in {SKILL_DIRS[a] for a in agents}:
+            unlink_ours(d / skill.name)
+    for f in (ROOT / "routing/bin").iterdir():
+        unlink_ours(BIN_DIR / f.name)
+    for a in agents:
+        if AGENTS[a]["instructions"].exists():
+            set_block(AGENTS[a]["instructions"], None)
+    for path in (HOME / ".claude/settings.json", HOME / ".codex/hooks.json"):
+        if path.exists():
+            cfg = load_json(path)
+            strip_ours(cfg.get("hooks", {}))
+            save_json(path, cfg)
+    ts = HOME / ".config/opencode/plugin/spellbook-slop-gate.ts"
+    if ts.exists() and not DRY:
+        ts.unlink()
+    say("external skills, MCP servers, and tools stay installed; remove them with npx skills / claude mcp / codex mcp")
+
+
+def status(agents):
+    for a in agents:
+        f = AGENTS[a]["instructions"]
+        block = f.exists() and BEGIN in f.read_text()
+        say(f"{a}: instructions block {'yes' if block else 'no'}")
+    for d in sorted({SKILL_DIRS[a] for a in agents}):
+        ours = [p.name for p in d.glob("*") if p.is_symlink() and str(p.resolve()).startswith(str(ROOT))] if d.exists() else []
+        say(f"{d}: {len(ours)} Spellbook skills linked")
+    say(f"slop-lint on PATH: {'yes' if shutil.which('slop-lint') else 'NO'}")
+
+
+# ─── main ───────────────────────────────────────────────────────────────────
+
+def main():
+    global DRY
+    ap = argparse.ArgumentParser(prog="spellbook")
+    ap.add_argument("command", choices=["install", "uninstall", "status"])
+    ap.add_argument("--with", dest="extra", default="", help="extra groups: routing,personal,lsp")
+    ap.add_argument("--agents", default="", help="claude,codex,opencode (default: all three; missing ones are skipped)")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--skip-external", action="store_true", help="link first-party skills only; skip npx skills")
+    o = ap.parse_args()
+    DRY = o.dry_run
+
+    groups = ["core"] + [g for g in o.extra.split(",") if g]
+    agents = [a for a in o.agents.split(",") if a] or list(AGENTS)
+    unknown = [a for a in agents if a not in AGENTS]
+    if unknown:
+        sys.exit(f"unknown agents: {unknown}")
+    say(f"spellbook {o.command}: groups={','.join(groups)} agents={','.join(agents)}{' (dry run)' if DRY else ''}")
+
+    if o.command == "status":
+        return status(agents)
+    if o.command == "uninstall":
+        return uninstall_all(groups, agents)
+
+    spec = manifest()
+    install_tools(spec, groups)
+    # The tools step can install opencode; skip any agent that is still missing.
+    missing = [a for a in agents if not shutil.which(AGENTS[a]["bin"])]
+    if missing and not DRY:
+        say(f"    skipping agents not on PATH: {', '.join(missing)}")
+        agents = [a for a in agents if a not in missing]
+    install_skills(spec, groups, agents, external=not o.skip_external)
+    install_mcp(spec, groups, agents)
+    install_plugins(spec, groups, agents)
+    install_instructions(groups, agents)
+    install_hooks(agents)
+    if "routing" in groups:
+        install_routing()
+    say("done. restart your agents to load changes.")
+
+
+if __name__ == "__main__":
+    main()

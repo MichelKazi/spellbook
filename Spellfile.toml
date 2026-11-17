@@ -1,0 +1,155 @@
+# Spellfile: everything Spellbook installs that lives outside this repo.
+#
+# Groups: "core" installs by default. Others are opt-in:
+#   ./install.sh --with routing,personal
+#
+# Kinds:
+#   [[tool]]   CLI on PATH. `check` is the command to look for; `install` runs when it is missing.
+#   [[skill]]  Agent Skills from a GitHub repo, installed with `npx skills` into every selected agent.
+#   [[mcp]]    MCP server registered with Claude Code, Codex, and opencode (`agents` narrows it).
+#   [[plugin]] Agent-specific plugin. Use it only when a skill or MCP server can't do the job.
+#
+# `replaces` lists the old ai-dotfiles skills this entry retires (see docs/SKILLS.md).
+
+# ─── tools ──────────────────────────────────────────────────────────────────
+
+[[tool]]
+name = "slopbliterator"
+group = "core"
+check = "slop-lint"
+install = "pipx install git+https://github.com/MichelKazi/slopbliterator.git"
+why = "STE linter for outward prose. The slop gate hook calls it."
+
+[[tool]]
+name = "opencode"
+group = "core"
+check = "opencode"
+install = "npm install -g opencode-ai@1.19.5"
+
+[[tool]]
+name = "d2"
+group = "core"
+check = "d2"
+install = "brew install d2"
+why = "Renderer for the architecture-diagram skill."
+
+# ─── skills: writing ───────────────────────────────────────────────────────
+
+[[skill]]
+source = "MichelKazi/slopbliterator"
+skills = ["slopbliterator"]
+group = "core"
+replaces = ["no-ai-slop"]
+why = "Measured STE linter plus a diff-aware substance check, instead of a banned-word list."
+
+# ─── skills: engineering process ───────────────────────────────────────────
+
+[[skill]]
+source = "obra/superpowers"
+skills = [
+  "brainstorming",
+  "writing-plans",
+  "executing-plans",
+  "test-driven-development",
+  "systematic-debugging",
+  "verification-before-completion",
+  "requesting-code-review",
+  "receiving-code-review",
+  "dispatching-parallel-agents",
+  "subagent-driven-development",
+  "using-git-worktrees",
+  "finishing-a-development-branch",
+  "using-superpowers",
+]
+group = "core"
+replaces = ["root-cause-tracing", "code-self-check", "code-review-session", "deep-review", "create-pr"]
+why = "Most-used process skill set. Debugging, TDD, verification, and review discipline in one maintained package."
+
+[[skill]]
+source = "anthropics/skills"
+skills = ["skill-creator", "frontend-design", "webapp-testing", "mcp-builder"]
+group = "core"
+replaces = ["mobile-app-design"]
+why = "Anthropic's maintained skills. frontend-design is what the design skill routes web UI work to."
+
+[[skill]]
+source = "vercel-labs/skills"
+skills = ["find-skills"]
+group = "core"
+replaces = ["find-skills"]
+why = "Same skill, from the source, so it stays current."
+
+# ─── skills: tools and platforms ───────────────────────────────────────────
+
+[[skill]]
+source = "morluto/rea"
+skills = ["reverse-engineer-anything"]
+group = "core"
+why = "Reverse engineer binaries, apps, and sites. Pairs with the rea MCP server below."
+
+[[skill]]
+source = "jgraph/drawio-mcp"
+skills = ["drawio"]
+group = "core"
+replaces = ["drawio"]
+why = "Official draw.io skill from jgraph."
+
+[[skill]]
+source = "Graphify-Labs/graphify"
+skills = ["graphify"]
+group = "core"
+replaces = ["graphify", "graphify-query"]
+
+[[skill]]
+source = "NSHipster/sosumi.ai"
+skills = ["sosumi"]
+group = "core"
+replaces = ["sosumi"]
+why = "Apple docs and HIG as Markdown."
+
+[[skill]]
+source = "supabase/agent-skills"
+skills = ["supabase", "supabase-postgres-best-practices"]
+group = "personal"
+replaces = ["supabase", "supabase-postgres-best-practices"]
+
+[[skill]]
+source = "railwayapp/railway-skills"
+skills = ["use-railway"]
+group = "personal"
+replaces = ["use-railway"]
+
+[[skill]]
+source = "PeonPing/peon-ping"
+skills = ["peon-ping-config", "peon-ping-log", "peon-ping-toggle", "peon-ping-use", "peon-ping-rename"]
+group = "personal"
+replaces = ["peon-ping-config", "peon-ping-log", "peon-ping-toggle", "peon-ping-use"]
+
+# ─── MCP servers ───────────────────────────────────────────────────────────
+
+[[mcp]]
+name = "rea"
+command = "npx"
+args = ["-y", "rea-agents@6.9.0", "mcp"]
+group = "core"
+agents = ["claude", "codex"]
+why = "Not in opencode: DeepSeek rejects one of rea's tool schemas (a regex pattern), which fails every request."
+
+[[mcp]]
+name = "context7"
+command = "npx"
+args = ["-y", "@upstash/context7-mcp@4.7.1"]
+group = "core"
+why = "Current library docs on demand, so the model stops guessing at APIs from training data."
+
+# ─── plugins ───────────────────────────────────────────────────────────────
+
+[[plugin]]
+name = "pyright-lsp"
+group = "lsp"
+claude = "pyright-lsp@claude-plugins-official"
+
+[[plugin]]
+name = "rust-analyzer-lsp"
+group = "lsp"
+claude = "rust-analyzer-lsp@claude-plugins-official"

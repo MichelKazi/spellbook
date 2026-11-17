@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# ai-agent — run headless Claude Code against a non-Anthropic backend.
+#   ai-agent deepseek [claude args...]   → DeepSeek V4.1 (deepseek-flash, implementer)
+#   ai-agent glm      [claude args...]   → GLM 5.2 (reviewer)
+# --bare: no user hooks/plugins/OAuth, so chuzom never fires and Anthropic is never billed.
+set -euo pipefail
+source "$HOME/.config/llm-keys.env"
+
+case "${1:-}" in
+  deepseek) url="https://api.deepseek.com/anthropic"; key="$DEEPSEEK_API_KEY"; model="${DEEPSEEK_MODEL:-deepseek-flash}" ;;
+  glm)      url="$GLM_BASE_URL";                       key="$GLM_API_KEY";      model="$GLM_MODEL" ;;
+  *) echo "usage: ai-agent deepseek|glm [claude args...]" >&2; exit 2 ;;
+esac
+shift
+
+unset ANTHROPIC_AUTH_TOKEN
+export ANTHROPIC_BASE_URL="$url" ANTHROPIC_API_KEY="$key" ANTHROPIC_MODEL="$model" \
+       ANTHROPIC_DEFAULT_OPUS_MODEL="$model" ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
+       ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" CLAUDE_CODE_SUBAGENT_MODEL="$model" \
+       API_TIMEOUT_MS=3000000 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+exec claude --bare --model "$model" "$@"

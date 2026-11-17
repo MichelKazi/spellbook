@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# cc-model — swap Claude Code backend: z.ai glm proxy <-> native Anthropic (Pro OAuth)
+# Only edits the relevant keys in settings.json. Restart `claude` after switching.
+set -euo pipefail
+SETTINGS="$HOME/.claude/settings.json"
+source "$HOME/.config/llm-keys.env"
+GLM_KEY="$GLM_API_KEY"
+GLM_URL="https://api.z.ai/api/anthropic"
+GLM_MODEL="glm-5.2"
+
+# keys that pin the backend to the glm proxy
+STRIP='del(.env.ANTHROPIC_BASE_URL, .env.ANTHROPIC_AUTH_TOKEN, .env.ANTHROPIC_API_KEY,
+        .env.ANTHROPIC_DEFAULT_OPUS_MODEL, .env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+        .env.ANTHROPIC_DEFAULT_HAIKU_MODEL, .env.ANTHROPIC_SMALL_FAST_MODEL,
+        .env.CLAUDE_CODE_SUBAGENT_MODEL) | del(.model)'
+
+apply() { jq "$1" "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"; }
+
+case "${1:-status}" in
+  glm)
+    apply --arg key "$GLM_KEY" --arg url "$GLM_URL" --arg m "$GLM_MODEL" \
+      "$STRIP
+       | .env.ANTHROPIC_BASE_URL=\$url
+       | .env.ANTHROPIC_AUTH_TOKEN=\$key
+       | .env.ANTHROPIC_API_KEY=\"\"
+       | .env.ANTHROPIC_DEFAULT_OPUS_MODEL=\$m
+       | .env.ANTHROPIC_DEFAULT_SONNET_MODEL=\$m
+       | .env.ANTHROPIC_DEFAULT_HAIKU_MODEL=\$m
+       | .env.ANTHROPIC_SMALL_FAST_MODEL=\$m
+       | .env.CLAUDE_CODE_SUBAGENT_MODEL=\$m
+       | .model=\$m"
+    echo "→ glm-5.2 via z.ai proxy. Restart claude to apply."
+    ;;
+  anthropic)
+    apply "$STRIP"
+    echo "→ native Anthropic (Pro OAuth). Restart claude to apply."
+    ;;
+  status)
+    base=$(jq -r '.env.ANTHROPIC_BASE_URL // "api.anthropic.com (native OAuth)"' "$SETTINGS")
+    model=$(jq -r '.model // "(account default)"' "$SETTINGS")
+    if [[ "$base" == *z.ai* ]]; then echo "backend: glm-5.2 (z.ai proxy)"; else echo "backend: anthropic (native OAuth)"; fi
+    echo "  base_url: $base"
+    echo "  model:    $model"
+    ;;
+  *) echo "usage: cc-model [glm|anthropic|status]" >&2; exit 1 ;;
+esac
